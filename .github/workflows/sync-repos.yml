@@ -49,18 +49,19 @@ jobs:
           BRANCH_NAME="sync-$(date +%Y%m%d-%H%M%S)"
           git checkout -b $BRANCH_NAME
 
-          # Merge changes from source
-          git merge ${{ env.ORIGINAL_REPO_NAME }}/${{ github.event.inputs.source_branch || 'master' }} --no-ff -m "Sync changes from ${{ env.ORIGINAL_REPO_NAME }}"
+          # Attempt merge but continue even if conflicts exist
+          git merge ${{ env.ORIGINAL_REPO_NAME }}/${{ github.event.inputs.source_branch || 'master' }} --no-ff -m "Sync changes from ${{ env.ORIGINAL_REPO_NAME }}" || true
 
-          # Push to new branch
+          # Push branch (even with conflicts)
           git push origin $BRANCH_NAME
 
-          # Create PR using GitHub CLI
+          # Create PR with note about conflicts
           gh pr create \
             --title "Sync changes from ${{ env.ORIGINAL_REPO_NAME }} (automated)" \
-            --body "Automated sync of changes from source repository." \
+            --body "Automated sync of changes from source repository. **NOTE:** This PR has merge conflicts that need to be resolved manually." \
             --base ${{ github.event.inputs.destination_branch || 'main' }} \
             --head $BRANCH_NAME
+
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
           ORIGINAL_REPO_NAME: ${{ github.event.repository.name }}
