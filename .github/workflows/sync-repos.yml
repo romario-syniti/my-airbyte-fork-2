@@ -29,7 +29,7 @@ on:
         required: true
         default: "sync-changes"
       sync_folders:
-        description: "Folders to sync (comma-separated)"
+        description: "Folders to sync (comma-separated, no leading/trailing slashes)"
         required: false
         default: "connectors"
 
@@ -69,7 +69,7 @@ jobs:
             echo "BRANCH_NAME=sync-changes-$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
             echo "PR_TITLE=Sync changes from ${{ github.repository }}" >> $GITHUB_ENV
             echo "PR_BODY=This PR syncs changes from the source repository ${{ github.repository }}." >> $GITHUB_ENV
-            echo "SYNC_FOLDERS=src,docs,config" >> $GITHUB_ENV
+            echo "SYNC_FOLDERS=connectors" >> $GITHUB_ENV
           fi
 
       - name: Clone destination repository
@@ -86,6 +86,11 @@ jobs:
           git remote add source https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}.git
           git fetch source
 
+          # Debug: List all directories in source repository to help identify correct paths
+          echo "===== Available directories in source repository ====="
+          git ls-tree -r --name-only source/master | grep "/" | sort | uniq | sed 's:/[^/]*$::' | sort | uniq
+          echo "===================================================="
+
           # Convert comma-separated folders to array and sync each folder
           IFS=',' read -ra FOLDERS <<< "${{ env.SYNC_FOLDERS }}"
 
@@ -95,8 +100,9 @@ jobs:
             FOLDER=$(echo "$FOLDER" | xargs)  # Trim whitespace
             echo "Processing folder: $FOLDER"
             
-            # Check if folder exists in source repository
-            if git ls-tree -d --name-only source/master | grep -q "^$FOLDER$"; then
+            # Use a more flexible approach to find the folder
+            # This will match any path containing the folder name, not just exact matches
+            if git ls-tree -r --name-only source/master | grep -q "/$FOLDER/" || git ls-tree -r --name-only source/master | grep -q "^$FOLDER/"; then
               echo "Syncing folder: $FOLDER"
               
               # Remove existing folder in destination (if it exists)
@@ -108,11 +114,21 @@ jobs:
               mkdir -p "$FOLDER"
               
               # Copy specific folder content from source repository
-              git checkout source/master -- "$FOLDER"
+              git checkout source/master -- "$FOLDER" || echo "Failed checkout, trying pattern matching..."
+              
+              # If direct checkout fails, try to find files matching the pattern
+              if [ $? -ne 0 ]; then
+                # Find all files/dirs in source that match the pattern and copy them
+                for ITEM in $(git ls-tree -r --name-only source/master | grep "/$FOLDER/" || git ls-tree -r --name-only source/master | grep "^$FOLDER/"); do
+                  PARENT_DIR=$(dirname "$ITEM")
+                  mkdir -p "$PARENT_DIR"
+                  git checkout source/master -- "$ITEM"
+                done
+              fi
               
               # Check if there are changes
               if git status --porcelain | grep -q "^"; then
-                git add "$FOLDER"
+                git add -A
                 CHANGES_MADE=true
               fi
             else
