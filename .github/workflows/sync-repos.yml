@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - master
+    paths:
+      - "airbyte-integrations/connectors/source-file/**"
+      - "airbyte-integrations/connectors/source-postgres/**"
+      - "airbyte-integrations/connectors/source-mssql/**"
+      - "airbyte-integrations/connectors/destination-s3/**"
+      - "airbyte-integrations/connectors/destination-mssql/**"
+      - "airbyte-integrations/connectors/destination-postgres/**"
+      # Add or modify folders you want to sync
 
   workflow_dispatch:
     inputs:
@@ -25,6 +33,10 @@ on:
         description: "Branch name to create in destination"
         required: true
         default: "sync-changes"
+      sync_folders:
+        description: "Folders to sync (comma-separated)"
+        required: false
+        default: "src,docs,config"
 
 jobs:
   sync:
@@ -54,6 +66,7 @@ jobs:
             echo "BRANCH_NAME=${{ github.event.inputs.branch_name }}" >> $GITHUB_ENV
             echo "PR_TITLE=${{ github.event.inputs.pr_title }}" >> $GITHUB_ENV
             echo "PR_BODY=${{ github.event.inputs.pr_body }}" >> $GITHUB_ENV
+            echo "SYNC_FOLDERS=${{ github.event.inputs.sync_folders }}" >> $GITHUB_ENV
           else
             # Default values when triggered by push event
             echo "DEST_ORG=${{ secrets.DESTINATION_ORG }}" >> $GITHUB_ENV
@@ -61,6 +74,7 @@ jobs:
             echo "BRANCH_NAME=sync-changes-$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
             echo "PR_TITLE=Sync changes from ${{ github.repository }}" >> $GITHUB_ENV
             echo "PR_BODY=This PR syncs changes from the source repository ${{ github.repository }}." >> $GITHUB_ENV
+            echo "SYNC_FOLDERS=src,docs,config" >> $GITHUB_ENV
           fi
 
       - name: Clone destination repository
@@ -77,45 +91,64 @@ jobs:
           git remote add source https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}.git
           git fetch source
 
-          # Save the current HEAD to restore after the comparison
-          CURRENT_HEAD=$(git rev-parse HEAD)
+          # Convert comma-separated folders to array and sync each folder
+          IFS=',' read -ra FOLDERS <<< "${{ env.SYNC_FOLDERS }}"
 
-          # Create a temporary branch of source/master for comparison
-          git checkout -b temp-source-master source/master
+          CHANGES_MADE=false
 
-          # Go back to our sync branch
-          git checkout ${{ env.BRANCH_NAME }}
+          for FOLDER in "${FOLDERS[@]}"; do
+            FOLDER=$(echo "$FOLDER" | xargs)  # Trim whitespace
+            echo "Processing folder: $FOLDER"
+            
+            # Check if folder exists in source repository
+            if git ls-tree -d --name-only source/master | grep -q "^$FOLDER$"; then
+              echo "Syncing folder: $FOLDER"
+              
+              # Remove existing folder in destination (if it exists)
+              if [ -d "$FOLDER" ]; then
+                git rm -rf "$FOLDER"
+              fi
+              
+              # Create the folder if it doesn't exist
+              mkdir -p "$FOLDER"
+              
+              # Copy specific folder content from source repository
+              git checkout source/master -- "$FOLDER"
+              
+              # Check if there are changes
+              if git status --porcelain | grep -q "^"; then
+                git add "$FOLDER"
+                CHANGES_MADE=true
+              fi
+            else
+              echo "Warning: Folder '$FOLDER' not found in source repository"
+            fi
+          done
 
-          # Use git checkout to replace all files with source/master versions
-          echo "Applying changes from source repository..."
-          git rm -rf .
-          git checkout temp-source-master -- .
-
-          # Stage all changes
-          git add -A
-
-          # Commit the changes
-          git commit -m "Sync changes from ${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}" || echo "No changes to commit"
-
-          # Push new branch to destination
-          git push origin ${{ env.BRANCH_NAME }}
-
-          # Clean up temp branch
-          git branch -D temp-source-master
+          # Commit the changes if any were made
+          if [ "$CHANGES_MADE" = true ]; then
+            git commit -m "Sync changes from ${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }} for folders: ${{ env.SYNC_FOLDERS }}"
+            # Push new branch to destination
+            git push origin ${{ env.BRANCH_NAME }}
+            echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
+          else
+            echo "No changes to commit"
+            echo "CHANGES_DETECTED=false" >> $GITHUB_ENV
+          fi
 
       - name: Create Pull Request
+        if: env.CHANGES_DETECTED == 'true'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.PAT }}
           script: |
-            const { DEST_ORG, DEST_REPO, BRANCH_NAME, PR_TITLE, PR_BODY } = process.env;
-
+            const { DEST_ORG, DEST_REPO, BRANCH_NAME, PR_TITLE, PR_BODY, SYNC_FOLDERS } = process.env;
             try {
               const response = await github.rest.pulls.create({
                 owner: DEST_ORG,
                 repo: DEST_REPO,
                 title: PR_TITLE,
-                body: PR_BODY,
+                body: PR_BODY + `\n\nSynced folders: ${SYNC_FOLDERS}`,
                 head: BRANCH_NAME,
                 base: 'master'
               });
@@ -131,3 +164,4 @@ jobs:
           BRANCH_NAME: ${{ env.BRANCH_NAME }}
           PR_TITLE: ${{ env.PR_TITLE }}
           PR_BODY: ${{ env.PR_BODY }}
+          SYNC_FOLDERS: ${{ env.SYNC_FOLDERS }}
