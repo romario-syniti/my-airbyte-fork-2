@@ -1,89 +1,111 @@
-name: Sync Repos via PR
+name: Sync Repositories
 
 on:
   push:
     branches:
       - master
+
   workflow_dispatch:
     inputs:
-      source_branch:
-        description: "Source branch to sync from"
-        required: false
-        default: "master"
-      destination_branch:
-        description: "Destination branch to sync to"
-        required: false
-        default: "main"
+      destination_org:
+        description: "Destination organization name"
+        required: true
       destination_repo:
-        description: "Name of the destination repository"
+        description: "Destination repository name"
+        required: true
+      pr_title:
+        description: "Pull request title"
+        required: true
+        default: "Sync changes from source repository"
+      pr_body:
+        description: "Pull request body"
         required: false
-        default: "airbyte"
+        default: "This PR syncs changes from the source repository."
+      branch_name:
+        description: "Branch name to create in destination"
+        required: true
+        default: "sync-changes"
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    env:
-      ORIGINAL_REPO_NAME: ${{ github.event.repository.name }}
-      SOURCE_ORG_NAME: romario-syniti
-      DESTINATION_ORG_NAME: ${{ secrets.ORG }}
-      DESTINATION_REPO: ${{ github.event.inputs.destination_repo || 'airbyte' }}
-      SOURCE_BRANCH: ${{ github.event.inputs.source_branch || 'master' }}
-      DESTINATION_BRANCH: ${{ github.event.inputs.destination_branch || 'main' }}
-
     steps:
       - name: Checkout source repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
-      - name: Setup GitHub CLI
+      - name: Set up Git
         run: |
-          gh auth login --with-token <<< "${{ secrets.PAT }}"
-          gh auth status
-
-      - name: Sync changes via PR
-        run: |
-          # Set git identity
           git config --global user.email "romario.silva@syniti.com"
           git config --global user.name "romario-syniti"
 
-          # Clone destination repo
-          echo "Cloning destination repository: $DESTINATION_ORG_NAME/$DESTINATION_REPO"
-          gh repo clone "$DESTINATION_ORG_NAME/$DESTINATION_REPO"
-          cd "$DESTINATION_REPO"
+      - name: Set environment variables
+        id: set-vars
+        run: |
+          # Set variables based on workflow input or defaults
+          echo "SOURCE_ORG=$(echo ${{ github.repository }} | cut -d '/' -f 1)" >> $GITHUB_ENV
+          echo "SOURCE_REPO=$(echo ${{ github.repository }} | cut -d '/' -f 2)" >> $GITHUB_ENV
+
+          # Use workflow dispatch inputs if available, otherwise use default values
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "DEST_ORG=${{ github.event.inputs.destination_org }}" >> $GITHUB_ENV
+            echo "DEST_REPO=${{ github.event.inputs.destination_repo }}" >> $GITHUB_ENV
+            echo "BRANCH_NAME=${{ github.event.inputs.branch_name }}" >> $GITHUB_ENV
+            echo "PR_TITLE=${{ github.event.inputs.pr_title }}" >> $GITHUB_ENV
+            echo "PR_BODY=${{ github.event.inputs.pr_body }}" >> $GITHUB_ENV
+          else
+            # Default values when triggered by push event
+            echo "DEST_ORG=${{ secrets.DESTINATION_ORG }}" >> $GITHUB_ENV
+            echo "DEST_REPO=${{ secrets.DESTINATION_REPO }}" >> $GITHUB_ENV
+            echo "BRANCH_NAME=sync-changes-$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
+            echo "PR_TITLE=Sync changes from ${{ github.repository }}" >> $GITHUB_ENV
+            echo "PR_BODY=This PR syncs changes from the source repository ${{ github.repository }}." >> $GITHUB_ENV
+          fi
+
+      - name: Clone destination repository
+        run: |
+          git clone https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.DEST_ORG }}/${{ env.DEST_REPO }}.git dest-repo
+          cd dest-repo
+
+          # Create and checkout a new branch
+          git checkout -b ${{ env.BRANCH_NAME }}
 
           # Add source repo as remote
-          git remote add source "https://github.com/$SOURCE_ORG_NAME/$ORIGINAL_REPO_NAME.git"
-          git remote update
+          git remote add source https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}.git
+          git remote update source
 
-          # Create new branch with timestamp
-          BRANCH_NAME="sync-$(date +%Y%m%d-%H%M%S)"
-          git checkout -b "$BRANCH_NAME" "origin/$DESTINATION_BRANCH"
+          # Merge changes from source
+          git merge source/master --allow-unrelated-histories -m "Sync changes from ${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}"
 
-          # Attempt merge
-          if git merge "source/$SOURCE_BRANCH" --no-ff -m "Sync changes from $ORIGINAL_REPO_NAME"; then
-            MERGE_STATUS="Clean merge"
-          else
-            MERGE_STATUS="Merge conflicts detected"
-            # Add all files to track conflicts
-            git add .
-          fi
+          # Push new branch to destination
+          git push origin ${{ env.BRANCH_NAME }}
 
-          # Push branch (even with conflicts)
-          git push -u origin "$BRANCH_NAME"
+      - name: Create Pull Request
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const { DEST_ORG, DEST_REPO, BRANCH_NAME, PR_TITLE, PR_BODY } = process.env;
 
-          # Create PR with appropriate message
-          if [ "$MERGE_STATUS" = "Clean merge" ]; then
-            PR_BODY="Automated sync of changes from source repository."
-          else
-            PR_BODY="Automated sync of changes from source repository. **NOTE:** This PR has merge conflicts that need to be resolved manually."
-          fi
-
-          gh pr create \
-            --title "Sync changes from $ORIGINAL_REPO_NAME (automated)" \
-            --body "$PR_BODY" \
-            --base "$DESTINATION_BRANCH" \
-            --head "$BRANCH_NAME"
-
+            try {
+              const response = await github.rest.pulls.create({
+                owner: DEST_ORG,
+                repo: DEST_REPO,
+                title: PR_TITLE,
+                body: PR_BODY,
+                head: BRANCH_NAME,
+                base: 'master'
+              });
+              
+              console.log(`Pull request created: ${response.data.html_url}`);
+            } catch (error) {
+              console.error('Error creating pull request:', error);
+              core.setFailed('Failed to create pull request');
+            }
         env:
-          GH_TOKEN: ${{ secrets.PAT }}
+          DEST_ORG: ${{ env.DEST_ORG }}
+          DEST_REPO: ${{ env.DEST_REPO }}
+          BRANCH_NAME: ${{ env.BRANCH_NAME }}
+          PR_TITLE: ${{ env.PR_TITLE }}
+          PR_BODY: ${{ env.PR_BODY }}
