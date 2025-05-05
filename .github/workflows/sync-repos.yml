@@ -38,8 +38,11 @@ jobs:
           gh repo clone ${{ env.DESTINATION_ORG_NAME }}/airbyte
           cd airbyte
 
+          # Update origin URL to include credentials
+          git remote set-url origin https://${{ secrets.PAT }}@github.com/${{ env.DESTINATION_ORG_NAME }}/airbyte.git
+
           # Add source repo as remote
-          git remote add ${{ env.ORIGINAL_REPO_NAME }} https://${{ env.SOURCE_ORG_NAME }}:${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG_NAME }}/${{ env.ORIGINAL_REPO_NAME }}.git
+          git remote add ${{ env.ORIGINAL_REPO_NAME }} https://${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG_NAME }}/${{ env.ORIGINAL_REPO_NAME }}.git
           git remote update
 
           # Create new branch with timestamp
