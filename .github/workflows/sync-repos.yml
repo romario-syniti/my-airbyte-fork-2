@@ -66,20 +66,42 @@ jobs:
       - name: Clone destination repository
         run: |
           git clone https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.DEST_ORG }}/${{ env.DEST_REPO }}.git dest-repo
-          cd dest-repo
 
+      - name: Sync repositories
+        working-directory: dest-repo
+        run: |
           # Create and checkout a new branch
           git checkout -b ${{ env.BRANCH_NAME }}
 
           # Add source repo as remote
           git remote add source https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}.git
-          git remote update source
+          git fetch source
 
-          # Merge changes from source
-          git merge source/master --allow-unrelated-histories -m "Sync changes from ${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}"
+          # Save the current HEAD to restore after the comparison
+          CURRENT_HEAD=$(git rev-parse HEAD)
+
+          # Create a temporary branch of source/master for comparison
+          git checkout -b temp-source-master source/master
+
+          # Go back to our sync branch
+          git checkout ${{ env.BRANCH_NAME }}
+
+          # Use git checkout to replace all files with source/master versions
+          echo "Applying changes from source repository..."
+          git rm -rf .
+          git checkout temp-source-master -- .
+
+          # Stage all changes
+          git add -A
+
+          # Commit the changes
+          git commit -m "Sync changes from ${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}" || echo "No changes to commit"
 
           # Push new branch to destination
           git push origin ${{ env.BRANCH_NAME }}
+
+          # Clean up temp branch
+          git branch -D temp-source-master
 
       - name: Create Pull Request
         uses: actions/github-script@v6
