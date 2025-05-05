@@ -13,15 +13,28 @@ on:
       destination_branch:
         description: "Destination branch to sync to"
         required: false
-        default: "master"
+        default: "main"
+      destination_repo:
+        description: "Name of the destination repository"
+        required: false
+        default: "airbyte"
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      ORIGINAL_REPO_NAME: ${{ github.event.repository.name }}
+      SOURCE_ORG_NAME: romario-syniti
+      DESTINATION_ORG_NAME: ${{ secrets.ORG }}
+      DESTINATION_REPO: ${{ github.event.inputs.destination_repo || 'airbyte' }}
+      SOURCE_BRANCH: ${{ github.event.inputs.source_branch || 'master' }}
+      DESTINATION_BRANCH: ${{ github.event.inputs.destination_branch || 'main' }}
 
     steps:
       - name: Checkout source repository
         uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
       - name: Setup GitHub CLI
         run: |
@@ -35,35 +48,42 @@ jobs:
           git config --global user.name "romario-syniti"
 
           # Clone destination repo
-          gh repo clone ${{ env.DESTINATION_ORG_NAME }}/airbyte
-          cd airbyte
-
-          # Update origin URL to include credentials
-          git remote set-url origin https://${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG_NAME }}/${{ env.ORIGINAL_REPO_NAME }}.git
+          echo "Cloning destination repository: $DESTINATION_ORG_NAME/$DESTINATION_REPO"
+          gh repo clone "$DESTINATION_ORG_NAME/$DESTINATION_REPO"
+          cd "$DESTINATION_REPO"
 
           # Add source repo as remote
-          git remote add ${{ env.ORIGINAL_REPO_NAME }} https://${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG_NAME }}/${{ env.ORIGINAL_REPO_NAME }}.git
+          git remote add source "https://github.com/$SOURCE_ORG_NAME/$ORIGINAL_REPO_NAME.git"
           git remote update
 
           # Create new branch with timestamp
           BRANCH_NAME="sync-$(date +%Y%m%d-%H%M%S)"
-          git checkout -b $BRANCH_NAME
+          git checkout -b "$BRANCH_NAME" "origin/$DESTINATION_BRANCH"
 
-          # Attempt merge but continue even if conflicts exist
-          git merge ${{ env.ORIGINAL_REPO_NAME }}/${{ github.event.inputs.source_branch || 'master' }} --no-ff -m "Sync changes from ${{ env.ORIGINAL_REPO_NAME }}" || true
+          # Attempt merge
+          if git merge "source/$SOURCE_BRANCH" --no-ff -m "Sync changes from $ORIGINAL_REPO_NAME"; then
+            MERGE_STATUS="Clean merge"
+          else
+            MERGE_STATUS="Merge conflicts detected"
+            # Add all files to track conflicts
+            git add .
+          fi
 
           # Push branch (even with conflicts)
-          git push origin $BRANCH_NAME
+          git push -u origin "$BRANCH_NAME"
 
-          # Create PR with note about conflicts
+          # Create PR with appropriate message
+          if [ "$MERGE_STATUS" = "Clean merge" ]; then
+            PR_BODY="Automated sync of changes from source repository."
+          else
+            PR_BODY="Automated sync of changes from source repository. **NOTE:** This PR has merge conflicts that need to be resolved manually."
+          fi
+
           gh pr create \
-            --title "Sync changes from ${{ env.ORIGINAL_REPO_NAME }} (automated)" \
-            --body "Automated sync of changes from source repository. **NOTE:** This PR has merge conflicts that need to be resolved manually." \
-            --base ${{ github.event.inputs.destination_branch || 'main' }} \
-            --head $BRANCH_NAME
+            --title "Sync changes from $ORIGINAL_REPO_NAME (automated)" \
+            --body "$PR_BODY" \
+            --base "$DESTINATION_BRANCH" \
+            --head "$BRANCH_NAME"
 
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
-          ORIGINAL_REPO_NAME: ${{ github.event.repository.name }}
-          SOURCE_ORG_NAME: romario-syniti
-          DESTINATION_ORG_NAME: ${{ secrets.ORG }}
+          GH_TOKEN: ${{ secrets.PAT }}
