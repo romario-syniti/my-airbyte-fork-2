@@ -5,12 +5,7 @@ on:
     branches:
       - master
     paths:
-      - "airbyte-integrations/connectors/source-file/**"
-      - "airbyte-integrations/connectors/source-postgres/**"
-      - "airbyte-integrations/connectors/source-mssql/**"
-      - "airbyte-integrations/connectors/destination-s3/**"
-      - "airbyte-integrations/connectors/destination-mssql/**"
-      - "airbyte-integrations/connectors/destination-postgres/**"
+      - "**integrations/connectors/**"
       # Add or modify folders you want to sync
 
   workflow_dispatch:
@@ -36,7 +31,7 @@ on:
       sync_folders:
         description: "Folders to sync (comma-separated)"
         required: false
-        default: "src,docs,config"
+        default: "connectors"
 
 jobs:
   sync:
