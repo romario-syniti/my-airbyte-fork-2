@@ -18,16 +18,16 @@ jobs:
         connector:
           # - name: source-odata
           #   tag: 0.1.6-alpha
-          # - name: source-postgres
-          #   tag: 0.1.4-alpha
-          # - name: source-mssql
-          #   tag: 0.1.0
+          - name: source-postgres
+            tag: 0.1.4-alpha
+          - name: source-mssql
+            tag: 0.1.0
           # - name: source-file
           #   tag: 0.1.0
-          # - name: destination-mssql
-          #   tag: 0.1.0
-          # - name: destination-postgres
-          #   tag: 0.1.0
+          - name: destination-mssql
+            tag: 0.1.0
+          - name: destination-postgres
+            tag: 0.1.0
           - name: destination-s3
             tag: 0.1.0
 
