@@ -4,9 +4,9 @@ on:
   # push:
   #   branches:
   #     - master
-    paths:
-      - "**integrations/connectors/**"
-      # Add or modify folders you want to sync
+  #   paths:
+  #     - "**integrations/connectors/**"
+  #     # Add or modify folders you want to sync
 
   workflow_dispatch:
     inputs:
