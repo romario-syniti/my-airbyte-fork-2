@@ -1,9 +1,9 @@
 name: Sync Repositories
 
 on:
-  push:
-    branches:
-      - master
+  # push:
+  #   branches:
+  #     - master
     paths:
       - "**integrations/connectors/**"
       # Add or modify folders you want to sync
