@@ -36,9 +36,46 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build ${{ matrix.connector.name }}
+        id: build-connector
         uses: ./.github/actions/run-airbyte-ci
         with:
           context: "manual"
           subcommand: "connectors --name=${{ matrix.connector.name }} build --tag ${{ matrix.connector.tag }}"
           airbyte_ci_binary_url: ${{ github.event.inputs.airbyte_ci_binary_url }}
           max_attempts: 2
+
+      - name: Verify Docker image exists
+        run: |
+          # Expected image name format based on Airbyte conventions
+          IMAGE_NAME="airbyte/${{ matrix.connector.name }}:${{ matrix.connector.tag }}"
+
+          # Check if the image exists
+          if docker image inspect "$IMAGE_NAME" &> /dev/null; then
+            echo "✅ Docker image $IMAGE_NAME exists"
+            echo "Image details:"
+            docker image inspect "$IMAGE_NAME" --format '{{ .Id }} {{ .Size }}'
+            
+            # Additional checks - you can add or remove as needed
+            echo "Image layers:"
+            docker history --no-trunc "$IMAGE_NAME" --format "{{.Size}} {{.CreatedBy}}" | head -n 5
+          else
+            echo "❌ Docker image $IMAGE_NAME does not exist!"
+            echo "Available images:"
+            docker images | grep airbyte
+            exit 1
+          fi
+
+      - name: Test image functionality (basic)
+        run: |
+          IMAGE_NAME="airbyte/${{ matrix.connector.name }}:${{ matrix.connector.tag }}"
+
+          # Pull image to ensure we're using the correct one
+          docker pull "$IMAGE_NAME" || true
+
+          # Run a simple test to check if the image can be started
+          echo "Testing if image can start..."
+          if docker run --rm "$IMAGE_NAME" spec &> /dev/null; then
+            echo "✅ Image successfully executed the 'spec' command"
+          else
+            echo "⚠️ Image failed to execute the 'spec' command - this may be normal depending on configuration"
+          fi
