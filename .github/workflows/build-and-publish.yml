@@ -22,8 +22,8 @@ jobs:
             tag: 0.1.4-alpha
           - name: source-mssql
             tag: 0.1.0
-          # - name: source-file
-          #   tag: 0.1.0
+          - name: source-file
+            tag: 0.1.0
           - name: destination-mssql
             tag: 0.1.0
           - name: destination-postgres
