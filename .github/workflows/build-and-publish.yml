@@ -35,6 +35,16 @@ jobs:
       - name: Checkout Airbyte
         uses: actions/checkout@v4
 
+      # Debug step: List directory contents to verify repository structure
+      - name: Debug - Show repository structure
+        run: |
+          echo "======== Repository Structure ========"
+          ls -la
+          echo "===== Checking for connectors directory ====="
+          find . -type d -name "connectors" -o -name "airbyte-integrations" | xargs ls -la
+          echo "=============================================="
+
+      # Debug step: Add verbose option to airbyte-ci
       - name: Build ${{ matrix.connector.name }}
         id: build-connector
         uses: ./.github/actions/run-airbyte-ci
@@ -43,6 +53,74 @@ jobs:
           subcommand: "connectors --name=${{ matrix.connector.name }} build --tag ${{ matrix.connector.tag }}"
           airbyte_ci_binary_url: ${{ github.event.inputs.airbyte_ci_binary_url }}
           max_attempts: 2
+          options: "--verbose"
+
+      # Debug step: List all docker images immediately after build
+      - name: Debug - List all docker images
+        run: |
+          echo "========= All Docker Images ========="
+          docker images
+          echo "========= Images with 'airbyte' in name ========="
+          docker images | grep -i airbyte || echo "No images found with 'airbyte' in name"
+          echo "========= Images with '${{ matrix.connector.name }}' in name ========="
+          docker images | grep -i "${{ matrix.connector.name }}" || echo "No images found with '${{ matrix.connector.name }}' in name"
+          echo "=============================================="
+
+      # Debug step: Check for alternate image name format
+      - name: Debug - Check alternate image name formats
+        run: |
+          echo "======== Checking alternate image names ========"
+          # Check various possible naming patterns
+          POSSIBLE_NAMES=(
+            "airbyte/${{ matrix.connector.name }}:${{ matrix.connector.tag }}"
+            "airbytehq/${{ matrix.connector.name }}:${{ matrix.connector.tag }}"
+            "airbyte/${{ matrix.connector.name }}:dev"
+            "${{ matrix.connector.name }}:${{ matrix.connector.tag }}"
+            "${{ matrix.connector.name }}:latest"
+          )
+
+          for IMAGE_NAME in "${POSSIBLE_NAMES[@]}"; do
+            echo "Checking for image: $IMAGE_NAME"
+            if docker image inspect "$IMAGE_NAME" &> /dev/null; then
+              echo "✅ Found image: $IMAGE_NAME"
+              docker image inspect "$IMAGE_NAME" --format '{{ .Id }} {{ .Size }}'
+            else
+              echo "❌ Image not found: $IMAGE_NAME"
+            fi
+          done
+          echo "=============================================="
+
+      # Debug step: Check for dagger logs
+      - name: Debug - Check for dagger logs
+        run: |
+          echo "======== Checking for dagger logs ========"
+          find . -name "dagger_engine_logs*" -type f -o -type d
+
+          # If a tarball exists, extract and display its contents
+          DAGGER_LOGS=$(find . -name "dagger_engine_logs.tgz" -type f)
+          if [ -n "$DAGGER_LOGS" ]; then
+            echo "Found Dagger logs tarball, extracting..."
+            mkdir -p /tmp/dagger_logs
+            tar -xzf $DAGGER_LOGS -C /tmp/dagger_logs
+            echo "Log files in the tarball:"
+            find /tmp/dagger_logs -type f | sort
+            
+            # Display last 50 lines of each log file
+            for log in $(find /tmp/dagger_logs -type f); do
+              echo "==== Last 50 lines of $log ===="
+              tail -n 50 "$log"
+              echo "================================="
+            done
+          fi
+          echo "=============================================="
+
+      # Debug step: Check airbyte-ci binary and version
+      - name: Debug - Check airbyte-ci
+        run: |
+          echo "======== airbyte-ci binary check ========"
+          which airbyte-ci || echo "airbyte-ci not found in PATH"
+          airbyte-ci --version || echo "Failed to get airbyte-ci version"
+          echo "=============================================="
 
       - name: Verify Docker image exists
         run: |
