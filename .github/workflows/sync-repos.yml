@@ -69,7 +69,7 @@ jobs:
       - name: Create new branch for synced changes
         run: |
           # Create a new branch from develop
-          git checkout develop
+          git checkout sync
           git checkout -b ${{ env.DESTINATION_BRANCH }}
 
       - name: Add Airbyte repository as remote and rebase
