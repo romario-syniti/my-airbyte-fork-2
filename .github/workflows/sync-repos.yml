@@ -1,178 +1,194 @@
-name: Sync Repositories
+name: Sync from Airbyte Repository with History
 
 on:
-  # push:
-  #   branches:
-  #     - master
-  #   paths:
-  #     - "**integrations/connectors/**"
-  #     # Add or modify folders you want to sync
-
+  # Manual trigger
   workflow_dispatch:
     inputs:
-      destination_org:
-        description: "Destination organization name"
-        required: true
-      destination_repo:
-        description: "Destination repository name"
-        required: true
+      source_branch:
+        description: "Branch from Airbyte to sync (default: master)"
+        required: false
+        default: "master"
+        type: string
+      destination_branch:
+        description: "Branch name to create in this repository"
+        required: false
+        default: "airbyte-sync"
+        type: string
       pr_title:
-        description: "Pull request title"
-        required: true
-        default: "Sync changes from source repository"
-      pr_body:
-        description: "Pull request body"
+        description: "Title for the Pull Request"
         required: false
-        default: "This PR syncs changes from the source repository."
-      branch_name:
-        description: "Branch name to create in destination"
-        required: true
-        default: "sync-changes"
-      sync_folders:
-        description: "Folders to sync (comma-separated, no leading/trailing slashes)"
-        required: false
-        default: "connectors"
+        default: "Sync changes from Airbyte with history"
+        type: string
+
+  # # Optional: Schedule sync to run periodically
+  # schedule:
+  #  - cron: "0 0 * * 0" # Run weekly at midnight on Sunday
+  #   # Remove or modify this schedule as needed
+
+env:
+  # Fixed values for Airbyte repository
+  SOURCE_REPO: "airbytehq/airbyte"
+
+  # Default values for other parameters
+  DEFAULT_SOURCE_BRANCH: "master"
+  DEFAULT_DESTINATION_BRANCH: "airbyte-sync"
+  DEFAULT_PR_TITLE: "Weekly sync from Airbyte with history"
 
 jobs:
-  sync:
+  repo-sync:
+    name: Sync Repository with History
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout source repository
+      - name: Set repository parameters
+        id: set-params
+        run: |
+          # Use input parameters or defaults based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "SOURCE_BRANCH=${{ github.event.inputs.source_branch || env.DEFAULT_SOURCE_BRANCH }}" >> $GITHUB_ENV
+            echo "DESTINATION_BRANCH=${{ github.event.inputs.destination_branch || env.DEFAULT_DESTINATION_BRANCH }}" >> $GITHUB_ENV
+            echo "PR_TITLE=${{ github.event.inputs.pr_title || env.DEFAULT_PR_TITLE }}" >> $GITHUB_ENV
+          else
+            echo "SOURCE_BRANCH=${{ env.DEFAULT_SOURCE_BRANCH }}" >> $GITHUB_ENV
+            echo "DESTINATION_BRANCH=airbyte-sync-$(date +%Y%m%d)" >> $GITHUB_ENV
+            echo "PR_TITLE=${{ env.DEFAULT_PR_TITLE }} - $(date +%Y-%m-%d)" >> $GITHUB_ENV
+          fi
+
+      - name: Check out destination repository
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          # Use GITHUB_TOKEN with the permissions defined at workflow level
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Git
+      - name: Configure Git
         run: |
-          git config --global user.email "romario.silva@syniti.com"
-          git config --global user.name "romario-syniti"
+          git config --global user.name 'romario'
+          git config --global user.email 'actions@github.com'
 
-      - name: Set environment variables
-        id: set-vars
+      - name: Create new branch for synced changes
         run: |
-          # Set variables based on workflow input or defaults
-          echo "SOURCE_ORG=$(echo ${{ github.repository }} | cut -d '/' -f 1)" >> $GITHUB_ENV
-          echo "SOURCE_REPO=$(echo ${{ github.repository }} | cut -d '/' -f 2)" >> $GITHUB_ENV
+          # Create a new branch from develop
+          git checkout develop
+          git checkout -b ${{ env.DESTINATION_BRANCH }}
 
-          # Use workflow dispatch inputs if available, otherwise use default values
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "DEST_ORG=${{ github.event.inputs.destination_org }}" >> $GITHUB_ENV
-            echo "DEST_REPO=${{ github.event.inputs.destination_repo }}" >> $GITHUB_ENV
-            echo "BRANCH_NAME=${{ github.event.inputs.branch_name }}" >> $GITHUB_ENV
-            echo "PR_TITLE=${{ github.event.inputs.pr_title }}" >> $GITHUB_ENV
-            echo "PR_BODY=${{ github.event.inputs.pr_body }}" >> $GITHUB_ENV
-            echo "SYNC_FOLDERS=${{ github.event.inputs.sync_folders }}" >> $GITHUB_ENV
-          else
-            # Default values when triggered by push event
-            echo "DEST_ORG=${{ secrets.DESTINATION_ORG }}" >> $GITHUB_ENV
-            echo "DEST_REPO=${{ secrets.DESTINATION_REPO }}" >> $GITHUB_ENV
-            echo "BRANCH_NAME=sync-changes-$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
-            echo "PR_TITLE=Sync changes from ${{ github.repository }}" >> $GITHUB_ENV
-            echo "PR_BODY=This PR syncs changes from the source repository ${{ github.repository }}." >> $GITHUB_ENV
-            echo "SYNC_FOLDERS=connectors" >> $GITHUB_ENV
-          fi
-
-      - name: Clone destination repository
+      - name: Add Airbyte repository as remote and rebase
+        id: rebase
         run: |
-          git clone https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.DEST_ORG }}/${{ env.DEST_REPO }}.git dest-repo
+          # Configure git for non-interactive rebase
+          git config --global core.editor "true"
 
-      - name: Sync repositories
-        working-directory: dest-repo
-        run: |
-          # Create and checkout a new branch
-          git checkout -b ${{ env.BRANCH_NAME }}
+          # Add Airbyte repository as remote
+          git remote add original https://github.com/${{ env.SOURCE_REPO }}.git
 
-          # Add source repo as remote
-          git remote add source https://x-access-token:${{ secrets.PAT }}@github.com/${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }}.git
-          git fetch source
+          # Fetch source repository
+          git fetch original ${{ env.SOURCE_BRANCH }}
 
-          # Debug: List all directories in source repository to help identify correct paths
-          echo "===== Available directories in source repository ====="
-          git ls-tree -r --name-only source/master | grep "/" | sort | uniq | sed 's:/[^/]*$::' | sort | uniq
-          echo "===================================================="
+          # Create a temporary script to handle the rebase process
+          cat > /tmp/rebase-script.sh << 'EOF'
+          #!/bin/bash
+          set -e
 
-          # Convert comma-separated folders to array and sync each folder
-          IFS=',' read -ra FOLDERS <<< "${{ env.SYNC_FOLDERS }}"
+          # Start the rebase
+          git rebase original/$SOURCE_BRANCH -X theirs || true
 
-          CHANGES_MADE=false
-
-          for FOLDER in "${FOLDERS[@]}"; do
-            FOLDER=$(echo "$FOLDER" | xargs)  # Trim whitespace
-            echo "Processing folder: $FOLDER"
-            
-            # Use a more flexible approach to find the folder
-            # This will match any path containing the folder name, not just exact matches
-            if git ls-tree -r --name-only source/master | grep -q "/$FOLDER/" || git ls-tree -r --name-only source/master | grep -q "^$FOLDER/"; then
-              echo "Syncing folder: $FOLDER"
-              
-              # Remove existing folder in destination (if it exists)
-              if [ -d "$FOLDER" ]; then
-                git rm -rf "$FOLDER"
-              fi
-              
-              # Create the folder if it doesn't exist
-              mkdir -p "$FOLDER"
-              
-              # Copy specific folder content from source repository
-              git checkout source/master -- "$FOLDER" || echo "Failed checkout, trying pattern matching..."
-              
-              # If direct checkout fails, try to find files matching the pattern
-              if [ $? -ne 0 ]; then
-                # Find all files/dirs in source that match the pattern and copy them
-                for ITEM in $(git ls-tree -r --name-only source/master | grep "/$FOLDER/" || git ls-tree -r --name-only source/master | grep "^$FOLDER/"); do
-                  PARENT_DIR=$(dirname "$ITEM")
-                  mkdir -p "$PARENT_DIR"
-                  git checkout source/master -- "$ITEM"
-                done
-              fi
-              
-              # Check if there are changes
-              if git status --porcelain | grep -q "^"; then
-                git add -A
-                CHANGES_MADE=true
-              fi
+          # Check if we're in rebase mode
+          while git status | grep -q "You are currently rebasing"; do
+            # Handle conflicts due to deleted files
+            if git status | grep -q "deleted by\|deleted in"; then
+              # Remove files that were deleted in the source repo but modified in our repo
+              git status | grep "deleted by" | awk '{print $4}' | xargs -r git rm
+              # Remove files that were deleted in our repo but modified in the source repo
+              git status | grep "deleted in" | awk '{print $6}' | xargs -r git rm
+              # Remove files with rename/delete conflicts
+              git status | grep "renamed to" | grep "deleted in" | awk '{print $4}' | xargs -r git rm
+              # Remove any remaining conflicting files
+              git status | grep "both modified" | awk '{print $3}' | xargs -r git checkout --theirs
+             
+              # Stage all changes
+              git add .
+             
+              # Continue the rebase with an automatic commit message
+              GIT_EDITOR=true git rebase --continue || true
             else
-              echo "Warning: Folder '$FOLDER' not found in source repository"
+              # For other conflicts, choose "theirs" strategy
+              git status | grep "both modified" | awk '{print $3}' | xargs -r git checkout --theirs
+              git add .
+              GIT_EDITOR=true git rebase --continue || true
+            fi
+           
+            # Check if rebase is still in progress
+            if ! git status | grep -q "You are currently rebasing"; then
+              break
             fi
           done
 
-          # Commit the changes if any were made
-          if [ "$CHANGES_MADE" = true ]; then
-            git commit -m "Sync changes from ${{ env.SOURCE_ORG }}/${{ env.SOURCE_REPO }} for folders: ${{ env.SYNC_FOLDERS }}"
-            # Push new branch to destination
-            git push origin ${{ env.BRANCH_NAME }}
-            echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
+          # Check final status
+          if git status | grep -q "You are currently rebasing"; then
+            echo "REBASE_SUCCESS=false" >> $GITHUB_ENV
+            exit 1
           else
-            echo "No changes to commit"
-            echo "CHANGES_DETECTED=false" >> $GITHUB_ENV
+            echo "REBASE_SUCCESS=true" >> $GITHUB_ENV
+            exit 0
+          fi
+          EOF
+
+          # Make the script executable
+          chmod +x /tmp/rebase-script.sh
+
+          # Run the rebase script
+          if /tmp/rebase-script.sh; then
+            echo "Rebase completed successfully."
+            echo "REBASE_SUCCESS=true" >> $GITHUB_ENV
+           
+            # Remove .github/workflows directory from the synced content
+            echo "Removing .github/workflows directory from sync..."
+            if [ -d ".github/workflows" ]; then
+              git rm -r --cached .github/workflows/
+              git commit -m "Exclude .github/workflows directory from sync"
+            fi
+          else
+            echo "There are still unresolved conflicts after automatic fixes."
+            echo "REBASE_SUCCESS=false" >> $GITHUB_ENV
+            git rebase --abort
           fi
 
+      - name: Push changes
+        if: env.REBASE_SUCCESS == 'true'
+        run: |
+          git push origin ${{ env.DESTINATION_BRANCH }} --force
+
       - name: Create Pull Request
-        if: env.CHANGES_DETECTED == 'true'
+        if: env.REBASE_SUCCESS == 'true'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { DEST_ORG, DEST_REPO, BRANCH_NAME, PR_TITLE, PR_BODY, SYNC_FOLDERS } = process.env;
+            const { repo, owner } = context.repo;
+            const body = `This PR syncs changes from airbytehq/airbyte:${process.env.SOURCE_BRANCH} to this repository, preserving the commit history.
+
+            **Note**: This sync uses git rebase to maintain Airbyte's commit history.
+            The \`.github/workflows/\` directory has been excluded from this sync to prevent workflow permission issues.`;
+
             try {
-              const response = await github.rest.pulls.create({
-                owner: DEST_ORG,
-                repo: DEST_REPO,
-                title: PR_TITLE,
-                body: PR_BODY + `\n\nSynced folders: ${SYNC_FOLDERS}`,
-                head: BRANCH_NAME,
-                base: 'master'
+              const pr = await github.rest.pulls.create({
+                owner,
+                repo,
+                title: process.env.PR_TITLE,
+                head: process.env.DESTINATION_BRANCH,
+                base: 'master',  // PR to master
+                body: body
               });
-              
-              console.log(`Pull request created: ${response.data.html_url}`);
+             
+              console.log(`Pull request created: ${pr.data.html_url}`);
             } catch (error) {
-              console.error('Error creating pull request:', error);
-              core.setFailed('Failed to create pull request');
+              console.error(`Failed to create PR: ${error.message}`);
+              core.setFailed(`Failed to create PR: ${error.message}`);
             }
-        env:
-          DEST_ORG: ${{ env.DEST_ORG }}
-          DEST_REPO: ${{ env.DEST_REPO }}
-          BRANCH_NAME: ${{ env.BRANCH_NAME }}
-          PR_TITLE: ${{ env.PR_TITLE }}
-          PR_BODY: ${{ env.PR_BODY }}
-          SYNC_FOLDERS: ${{ env.SYNC_FOLDERS }}
+
+      - name: Report Rebase Failure
+        if: env.REBASE_SUCCESS == 'false'
+        run: |
+          echo "Rebase failed with conflicts that couldn't be automatically resolved."
+          echo "You may need to perform the sync manually from Airbyte."
+          exit 1
